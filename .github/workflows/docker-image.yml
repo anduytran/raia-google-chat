@@ -4,16 +4,16 @@ name: Deploy Adam Bot
 # 2. Triggers
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "master" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "master" ]
 
 # 3. Environment Variables
 env:
   PROJECT_ID: raiachatbot
   REGION: us-east1
   REPO_NAME: raia-chat-repo
-  SERVICE_NAME: Adam-BOT
+  SERVICE_NAME: adam-bot
 
 # 4. Jobs
 jobs:
