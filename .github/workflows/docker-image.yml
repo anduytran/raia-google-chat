@@ -13,7 +13,7 @@ env:
   PROJECT_ID: raiachatbot
   REGION: us-east1
   REPO_NAME: raia-chat-repo
-  SERVICE_NAME: Adam-BOT
+  SERVICE_NAME: adam-bot
 
 # 4. Jobs
 jobs:
