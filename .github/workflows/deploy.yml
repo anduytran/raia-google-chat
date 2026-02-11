@@ -1,0 +1,54 @@
+# 1. Workflow Name
+name: Deploy Adam Bot
+
+# 2. Triggers
+on:
+  push:
+    branches: [ "main" ]
+
+# 3. Environment Variables
+env:
+  PROJECT_ID: raiachatbot
+  REGION: us-east1
+  REPO_NAME: raia-chat-repo
+  SERVICE_NAME: Adam-BOT
+
+# 4. Jobs
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    
+    # 5. Checkout Code
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    # 6. Authenticate with Google
+    - id: auth
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+    # 7. Setup Google Cloud SDK
+    - uses: google-github-actions/setup-gcloud@v1
+      with:
+        project_id: ${{ env.PROJECT_ID }}
+
+    # 8. Configure Docker Authentication
+    - name: Docker Auth
+      run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+    # 9. Build and Push Container
+    - name: Build and Push
+      run: |
+        docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/$SERVICE_NAME:${{ github.sha }} .
+        docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/$SERVICE_NAME:${{ github.sha }}
+
+    # 10. Deploy to Cloud Run
+    - name: Deploy to Cloud Run
+      uses: google-github-actions/deploy-cloudrun@v1
+      with:
+        service: ${{ env.SERVICE_NAME }}
+        image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+        region: ${{ env.REGION }}
+        flags: '--allow-unauthenticated'
