@@ -4,9 +4,9 @@ name: Deploy Adam Bot
 # 2. Triggers
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "master" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "master" ]
 
 # 3. Environment Variables
 env:
