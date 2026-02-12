@@ -20,9 +20,9 @@ async def handle_chat_event(request: Request):
     
     # 1. Handle DM or Mention
     if payload.get("type") == "MESSAGE":
-        return {
+        return jsonify({
             "text": "Hey! It's Adam Bot (v0.0.1). I'm here to help!"
-        }
+        })
     
     # 2. Handle Added to Space
     if payload.get("type") == "ADDED_TO_SPACE":
