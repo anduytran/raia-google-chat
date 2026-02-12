@@ -3,8 +3,6 @@ name: Deploy Adam Bot
 
 # 2. Triggers
 on:
-  push:
-    branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
 
