@@ -27,7 +27,7 @@ async def handle_chat_event(request: Request):
     # 2. Handle Added to Space
     if payload.get("type") == "ADDED_TO_SPACE":
         return {
-            "text": "Thanks for adding me! I am ready to be your teammate."
+            "text": "Thanks for adding me! I am ready to help!"
         }
     ''' 3. Add more event types
     if payload.get("type") == "OTHER_EVENT_TYPE":
