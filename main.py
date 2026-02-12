@@ -21,7 +21,7 @@ async def handle_chat_event(request: Request):
     # 1. Handle DM or Mention
     if payload.get("type") == "MESSAGE":
         return {
-            "text": "Hey! It's Adam Bot (v0.0.1). I'm here to help once you give me a brain!"
+            "text": "Hey! It's Adam Bot (v0.0.1). I'm here to help!"
         }
     
     # 2. Handle Added to Space
