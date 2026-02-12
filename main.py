@@ -1,41 +1,48 @@
 import os
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
-app = FastAPI() # Create FastAPI instance
+app = FastAPI()
 
-@app.get("/") # Google Chat uses this endpoint for health checks
-def check_health(): # Simple check to see if the server is running
-    return {"status": "alive", "version": "0.0.1"}
+@app.get("/")
+def check_health():
+    return {"status": "alive", "version": "0.0.2"}
 
 @app.post("/")
 async def receive_chat_event(request: Request):
-    # 1. Get the data from the request
     try:
         event = await request.json()
+        print(f"FULL EVENT RECEIVED: {event}")
     except Exception as e:
-        print(f"Failed to parse JSON from request: {e}")
+        print(f"JSON Parse Error: {e}")
         return JSONResponse(content={"error": "invalid json"}, status_code=400)
 
-    # 2. PRINT IT TO LOGS (Crucial Step)
-    print(f"FULL EVENT RECEIVED: {event}")
+    
+    # 1. Check for the new "Interaction Event" format (What you are getting)
+    if 'chat' in event and 'messagePayload' in event['chat']:
+        user_message = event['chat']['messagePayload']['message']['text']
+        user_name = event['chat']['messagePayload']['message']['sender']['displayName']
+        
+        print(f"Interaction Event Detected. User: {user_name}, Message: {user_message}")
+        
+        # Google Chat Interaction events expect a specific response format
+        return {
+            "action": {
+                "actionMethod": "NEW_MESSAGE",
+            },
+            "text": f"I heard you, {user_name}! You said: {user_message}"
+        }
 
-    # 3. Check the type
-    event_type = event.get("type")
-    print(f"Event Type Detected: {event_type}")
+    # 2. Check for the legacy "Event" format (What we had before)
+    event_type = event.get('type')
+    
+    if event_type == 'MESSAGE':
+        user_message = event.get('message', {}).get('text', '')
+        return {"text": f"Legacy match! You said: {user_message}"}
 
-    # 4. Handle 'MESSAGE'
-    if event_type == "MESSAGE":
-        user_message = event.get("message", {}).get("text", "")
-        print(f"User said: {user_message}")
+    if event_type == 'ADDED_TO_SPACE':
+        return {"text": "Thanks for adding me!"}
 
-        return {"text": f"I heard you! You said: {user_message}"}
-
-    # 5. Handle 'ADDED_TO_SPACE'
-    if event_type == "ADDED_TO_SPACE":
-        return {"text": "Thanks for adding me! I am ready."}
-
-    # 6. Fallback
-    print(f"Unknown event type: {event_type}")
+    # 3. Fallback
+    print(f"Unknown event structure: {event.keys()}")
     return JSONResponse(content={}, status_code=200)
