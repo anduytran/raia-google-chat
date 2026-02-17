@@ -73,7 +73,7 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
         start_payload = {
             "channel": "sms",
             "phoneNumber": "+13212469680",
-            "smsIntroduction": "Hello! I am connecting via Google Chat."
+            "smsIntroduction": "Hello! I am connecting via Google Chat.",
             "source": "google_chat",    
             "fkUserId": external_key,   
             "firstName": first_name,
