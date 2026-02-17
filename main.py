@@ -17,23 +17,19 @@ async def receive_chat_event(request: Request):
         print(f"JSON Parse Error: {e}")
         return JSONResponse(content={"error": "invalid json"}, status_code=400)
 
-    
-    # 1. Check for the new "Interaction Event" format (What you are getting)
+    # 1. Check for the new "Interaction Event" format
     if 'chat' in event and 'messagePayload' in event['chat']:
         user_message = event['chat']['messagePayload']['message']['text']
         user_name = event['chat']['messagePayload']['message']['sender']['displayName']
         
         print(f"Interaction Event Detected. User: {user_name}, Message: {user_message}")
         
-        # Google Chat Interaction events expect a specific response format
+        # FIX: Return only the text object
         return {
-            "action": {
-                "actionMethod": "NEW_MESSAGE",
-            },
             "text": f"I heard you, {user_name}! You said: {user_message}"
         }
 
-    # 2. Check for the legacy "Event" format (What we had before)
+    # 2. Check for the legacy "Event" format
     event_type = event.get('type')
     
     if event_type == 'MESSAGE':
