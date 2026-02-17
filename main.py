@@ -40,13 +40,17 @@ def generate_deterministic_key(space_name: str, user_name: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 async def get_active_raia_conversation(external_key: str, user_display_name: str) -> str:
+    """
+    1. Tries to find an existing open conversation for this user key.
+    2. If none, Ensure User Exists -> Create New Generic Conversation.
+    """
     headers = {
         "Content-Type": "application/json",
         "Agent-Secret-Key": RAIA_API_KEY
     }
 
     async with httpx.AsyncClient() as client:
-        # STEP 1: Search for existing active conversation
+        # STEP 1: Search for existing active conversation (Unchanged)
         try:
             search_response = await client.get(
                 f"{RAIA_BASE_URL}/conversations",
@@ -63,40 +67,73 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
         except Exception as e:
             logger.warning(f"Lookup failed: {e}")
 
-        # STEP 2: Start NEW Conversation
-        logger.info(f"Starting NEW conversation for key: {external_key[:8]}")
-        
+        # STEP 2: The New Strategy (Create User -> Create Conversation)
+        logger.info(f"Creating NEW generic conversation for key: {external_key[:8]}")
+
+        # A. Create or Get the User first
+        # We try to create the user. If they exist, Raia usually returns the existing ID or we can search.
         name_parts = user_display_name.split(' ', 1)
         first_name = name_parts[0]
         last_name = name_parts[1] if len(name_parts) > 1 else "User"
-
-        start_payload = {
-            "channel": "sms",
-            "phoneNumber": "+13212469680",
-            "smsIntroduction": "Hello! I am connecting via Google Chat.",
-            "source": "google_chat",    
-            "fkUserId": external_key,   
+        
+        user_payload = {
+            "fkId": external_key,
             "firstName": first_name,
-            "lastName": last_name,
-            "context": "User connected via Google Chat integration."
+            "lastName": last_name
         }
         
-        start_response = await client.post(
-            f"{RAIA_BASE_URL}/conversations/start",
-            json=start_payload,
+        # We attempt to create the user to get their internal ID
+        user_response = await client.post(
+            f"{RAIA_BASE_URL}/users",
+            json=user_payload,
             headers=headers,
             timeout=10.0
         )
         
-        # Detailed error logging
-        if start_response.status_code >= 400:
-            logger.error(f"Raia Start Error: {start_response.text}")
-            
-        start_response.raise_for_status()
-        start_data = start_response.json()
+        if user_response.status_code == 200 or user_response.status_code == 201:
+            user_data = user_response.json()
+            raia_user_id = user_data.get("id")
+        else:
+            # If creation fails (maybe user exists?), try to search for them
+            logger.info("User creation failed/existed, searching instead...")
+            search_user = await client.get(
+                f"{RAIA_BASE_URL}/users/search",
+                params={"fkId": external_key},
+                headers=headers
+            )
+            search_user.raise_for_status()
+            user_data = search_user.json()
+            # Handle list vs object return
+            if isinstance(user_data, list) and user_data:
+                raia_user_id = user_data[0].get("id")
+            else:
+                raia_user_id = user_data.get("id")
+
+        if not raia_user_id:
+            raise ValueError("Could not get Raia User ID")
+
+        # B. Create the Conversation using the internal User ID
+        # This matches the screenshot you sent (POST /external/conversations)
+        create_conv_payload = {
+            "conversationUserId": raia_user_id,
+            "title": f"Chat with {first_name}",
+            "context": "User connected via Google Chat."
+        }
         
-        new_id = start_data.get("conversationId") or start_data.get("id")
-        return new_id
+        create_response = await client.post(
+            f"{RAIA_BASE_URL}/conversations",
+            json=create_conv_payload,
+            headers=headers,
+            timeout=10.0
+        )
+        
+        if create_response.status_code >= 400:
+            logger.error(f"Raia Create Error: {create_response.text}")
+            
+        create_response.raise_for_status()
+        new_data = create_response.json()
+        
+        return new_data.get("conversationId") or new_data.get("id")
 
 async def send_message_to_raia(conversation_id: str, message: str) -> str:
     """Sends the user message to Raia and returns the Agent's text response."""
