@@ -19,25 +19,39 @@ async def receive_chat_event(request: Request):
 
     # 1. Check for the new "Interaction Event" format
     if 'chat' in event and 'messagePayload' in event['chat']:
-        user_message = event['chat']['messagePayload']['message']['text']
-        user_name = event['chat']['messagePayload']['message']['sender']['displayName']
+        payload = event['chat']['messagePayload']
+        user_message = payload['message']['text']
+        user_name = payload['message']['sender']['displayName']
+        
+        # EXTRACT THREAD NAME (Crucial for History Off)
+        thread_name = payload['message']['thread']['name']
         
         print(f"Interaction Event Detected. User: {user_name}, Message: {user_message}")
         
-        # FIX: Return only the text object
-        return {
-            "text": f"I heard you, {user_name}! You said: {user_message}"
-        }
+        # FIX: Use JSONResponse and include the thread
+        return JSONResponse(content={
+            "text": f"I heard you, {user_name}! You said: {user_message}",
+            "thread": {
+                "name": thread_name
+            }
+        })
 
     # 2. Check for the legacy "Event" format
     event_type = event.get('type')
     
     if event_type == 'MESSAGE':
         user_message = event.get('message', {}).get('text', '')
-        return {"text": f"Legacy match! You said: {user_message}"}
+        # Try to get thread if available, otherwise ignore
+        thread_name = event.get('message', {}).get('thread', {}).get('name')
+        
+        response_data = {"text": f"Legacy match! You said: {user_message}"}
+        if thread_name:
+            response_data['thread'] = {'name': thread_name}
+            
+        return JSONResponse(content=response_data)
 
     if event_type == 'ADDED_TO_SPACE':
-        return {"text": "Thanks for adding me!"}
+        return JSONResponse(content={"text": "Thanks for adding me!"})
 
     # 3. Fallback
     print(f"Unknown event structure: {event.keys()}")
