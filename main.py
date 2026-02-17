@@ -40,17 +40,13 @@ def generate_deterministic_key(space_name: str, user_name: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 async def get_active_raia_conversation(external_key: str, user_display_name: str) -> str:
-    """
-    1. Tries to find an existing open conversation for this user key.
-    2. If none exists, creates a new one with the CORRECT payload structure.
-    """
     headers = {
         "Content-Type": "application/json",
         "Agent-Secret-Key": RAIA_API_KEY
     }
 
     async with httpx.AsyncClient() as client:
-        # STEP 1: Search for existing active conversation
+        # STEP 1: Search (Same as before)
         try:
             search_response = await client.get(
                 f"{RAIA_BASE_URL}/conversations",
@@ -62,29 +58,26 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
             if search_response.status_code == 200:
                 data = search_response.json()
                 conversations = data if isinstance(data, list) else data.get('items', [])
-                
                 if conversations:
-                    existing_id = conversations[0].get('id') or conversations[0].get('conversationId')
-                    logger.info(f"Resuming Raia conversation: {existing_id}")
-                    return existing_id
-                    
+                    return conversations[0].get('id') or conversations[0].get('conversationId')
         except Exception as e:
-            logger.warning(f"Lookup failed (creating new instead): {e}")
+            logger.warning(f"Lookup failed: {e}")
 
-        # STEP 2: Start new conversation
+        # STEP 2: Start NEW Conversation (The Fix)
         logger.info(f"Starting NEW conversation for key: {external_key[:8]}")
         
-        # Raia requires firstName and lastName
         name_parts = user_display_name.split(' ', 1)
         first_name = name_parts[0]
-        # Use "User" if no last name is found to prevent 400 errors
         last_name = name_parts[1] if len(name_parts) > 1 else "User"
 
+        hash_ints = int(hashlib.sha256(external_key.encode()).hexdigest(), 16)
+        dummy_phone = f"+1555{str(hash_ints)[:7]}"
+
         start_payload = {
-            "channel": "api",           # 'api' is standard for integrations
-            "source": "google_chat",    # REQUIRED: Tells Raia where this came from
-            "fkUserId": external_key,   # The User ID
-            "fkId": external_key,       # Redundant ID often required by legacy schemas
+            "channel": "sms",            # FIX: Use 'sms' as it is a valid channel
+            "phoneNumber": dummy_phone,  # REQUIRED for SMS channel
+            "source": "google_chat",    
+            "fkUserId": external_key,   
             "firstName": first_name,
             "lastName": last_name,
             "context": "User connected via Google Chat integration."
@@ -97,7 +90,6 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
             timeout=10.0
         )
         
-        # If this fails, it prints the EXACT reason from Raia
         if start_response.status_code >= 400:
             logger.error(f"Raia Start Error: {start_response.text}")
             
