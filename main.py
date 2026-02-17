@@ -46,7 +46,7 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
     }
 
     async with httpx.AsyncClient() as client:
-        # STEP 1: Search (Same as before)
+        # STEP 1: Search for existing active conversation
         try:
             search_response = await client.get(
                 f"{RAIA_BASE_URL}/conversations",
@@ -63,19 +63,17 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
         except Exception as e:
             logger.warning(f"Lookup failed: {e}")
 
-        # STEP 2: Start NEW Conversation (The Fix)
+        # STEP 2: Start NEW Conversation
         logger.info(f"Starting NEW conversation for key: {external_key[:8]}")
         
         name_parts = user_display_name.split(' ', 1)
         first_name = name_parts[0]
         last_name = name_parts[1] if len(name_parts) > 1 else "User"
 
-        hash_ints = int(hashlib.sha256(external_key.encode()).hexdigest(), 16)
-        dummy_phone = f"+1555{str(hash_ints)[:7]}"
-
         start_payload = {
-            "channel": "sms",            # FIX: Use 'sms' as it is a valid channel
-            "phoneNumber": dummy_phone,  # REQUIRED for SMS channel
+            "channel": "sms",
+            "phoneNumber": "+13212469680",
+            "smsIntroduction": "Hello! I am connecting via Google Chat."
             "source": "google_chat",    
             "fkUserId": external_key,   
             "firstName": first_name,
@@ -90,6 +88,7 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
             timeout=10.0
         )
         
+        # Detailed error logging
         if start_response.status_code >= 400:
             logger.error(f"Raia Start Error: {start_response.text}")
             
