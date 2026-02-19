@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 # --- GOOGLE CHAT AUTH ---
-SCOPES = ['https://www.googleapis.com/auth/chat.bot']
+# We now request 'readonly' access to read the chat history for context
+SCOPES = [
+    'https://www.googleapis.com/auth/chat.bot',
+    'https://www.googleapis.com/auth/chat.messages.readonly'
+]
 credentials, project_id = google.auth.default(scopes=SCOPES)
 chat_service = build('chat', 'v1', credentials=credentials)
 
@@ -29,20 +33,65 @@ chat_service = build('chat', 'v1', credentials=credentials)
 def normalize_text(text: str) -> str:
     """Strips mentions and cleans whitespace."""
     if not text: return ""
-    # Removes <users/1234> pattern
+    # Removes <users/1234> pattern (the @Adam Bot tag)
     text = re.sub(r'<users/[^>]+>', '', text)
     return text.strip()
 
-def generate_deterministic_key(space_name: str, user_name: str) -> str:
-    """Generates a consistent key based on the User and Space."""
-    # This ensures the same user in the same DM always gets the same Raia history
-    raw_key = f"{space_name}:{user_name}"
+def generate_deterministic_key(space_name: str, user_name: str, space_type: str, thread_name: str = None) -> str:
+    """
+    Generates a consistent key based on the context.
+    - DMs: Tied to the specific user.
+    - Spaces: Tied to the specific thread, so multiple users share context.
+    """
+    if space_type == "DIRECT_MESSAGE":
+        raw_key = f"{space_name}:{user_name}"
+    else:
+        raw_key = thread_name if thread_name else space_name
+        
     return hashlib.sha256(raw_key.encode()).hexdigest()
+
+def fetch_space_history(space_name: str, thread_name: str = None, limit: int = 50) -> str:
+    """
+    Fetches up to the last 50 messages from the Google Chat space/thread.
+    This provides deep context without blowing up API token limits.
+    """
+    try:
+        # Fetch recent messages in the space (grab up to 100 to account for filtering)
+        response = chat_service.spaces().messages().list(
+            parent=space_name,
+            pageSize=100 
+        ).execute()
+        
+        messages = response.get('messages', [])
+        if not messages:
+            return ""
+
+        # If we are in a thread, filter out messages that don't belong to this thread
+        if thread_name:
+            messages = [m for m in messages if m.get('thread', {}).get('name') == thread_name]
+
+        # Take only the last 'limit' messages to save Raia token costs
+        recent_messages = messages[-limit:]
+        
+        transcript = []
+        for m in recent_messages:
+            sender = m.get('sender', {}).get('displayName', 'Unknown')
+            text = normalize_text(m.get('text', ''))
+            
+            # Skip empty messages (like if someone just sent an image)
+            if text:
+                transcript.append(f"[{sender}]: {text}")
+
+        return "\n".join(transcript)
+    except Exception as e:
+        logger.error(f"Failed to fetch space history: {e}")
+        return ""
 
 async def get_active_raia_conversation(external_key: str, user_display_name: str) -> str:
     """
-    1. Tries to find an existing open conversation for this user key.
-    2. If none, Ensure User Exists -> Create New Generic Conversation.
+    1. Searches for the user to retrieve their existing conversation history.
+    2. If a conversation exists, returns the latest one to continue the chat.
+    3. If not, creates the user (if needed) and a new conversation.
     """
     headers = {
         "Content-Type": "application/json",
@@ -50,73 +99,58 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
     }
 
     async with httpx.AsyncClient() as client:
-        # STEP 1: Search for existing active conversation (Unchanged)
+        raia_user_id = None
+
+        # STEP 1: Search for the User and their Conversation History
         try:
-            search_response = await client.get(
-                f"{RAIA_BASE_URL}/conversations",
-                params={"fkUserId": external_key, "status": "open"}, 
+            search_user = await client.get(
+                f"{RAIA_BASE_URL}/users/search",
+                params={"fkId": external_key},
                 headers=headers,
                 timeout=5.0
             )
             
-            if search_response.status_code == 200:
-                data = search_response.json()
-                conversations = data if isinstance(data, list) else data.get('items', [])
-                if conversations:
-                    return conversations[0].get('id') or conversations[0].get('conversationId')
+            if search_user.status_code == 200:
+                user_data = search_user.json()
+                if user_data:
+                    record = user_data[0] if isinstance(user_data, list) else user_data
+                    raia_user_id = record.get("user", {}).get("id") or record.get("id")
+                    conv_ids = record.get("conversationIds", [])
+                    if conv_ids and isinstance(conv_ids, list):
+                        latest_conv_id = conv_ids[-1]
+                        logger.info(f"Continuing existing conversation: {latest_conv_id}")
+                        return latest_conv_id
         except Exception as e:
-            logger.warning(f"Lookup failed: {e}")
+            logger.warning(f"User search/history check failed: {e}")
 
-        # STEP 2: The New Strategy (Create User -> Create Conversation)
-        logger.info(f"Creating NEW generic conversation for key: {external_key[:8]}")
-
-        # A. Create or Get the User first
-        # We try to create the user. If they exist, Raia usually returns the existing ID or we can search.
+        # STEP 2: Create User (Only if they weren't found in Step 1)
         name_parts = user_display_name.split(' ', 1)
         first_name = name_parts[0]
         last_name = name_parts[1] if len(name_parts) > 1 else "User"
-        
-        user_payload = {
-            "fkId": external_key,
-            "firstName": first_name,
-            "lastName": last_name
-        }
-        
-        # We attempt to create the user to get their internal ID
-        user_response = await client.post(
-            f"{RAIA_BASE_URL}/users",
-            json=user_payload,
-            headers=headers,
-            timeout=10.0
-        )
-        
-        if user_response.status_code == 200 or user_response.status_code == 201:
-            user_data = user_response.json()
-            raia_user_id = user_data.get("id")
-        else:
-            # If creation fails (maybe user exists?), try to search for them
-            logger.info("User creation failed/existed, searching instead...")
-            search_user = await client.get(
-                f"{RAIA_BASE_URL}/users/search",
-                params={"fkId": external_key},
-                headers=headers
-            )
-            search_user.raise_for_status()
-            user_data = search_user.json()
-            # Handle list vs object return
-            if isinstance(user_data, list) and user_data:
-                # If it's a list, check the first item
-                first_item = user_data[0]
-                raia_user_id = first_item.get("user", {}).get("id") or first_item.get("id")
-            else:
-                # If it's a dictionary (like your example JSON)
-                raia_user_id = user_data.get("user", {}).get("id") or user_data.get("id")
 
         if not raia_user_id:
-            raise ValueError("Could not get Raia User ID")
+            logger.info(f"Creating new user for key: {external_key[:8]}")
+            user_payload = {
+                "fkId": external_key,
+                "firstName": first_name,
+                "lastName": last_name
+            }
+            
+            user_response = await client.post(
+                f"{RAIA_BASE_URL}/users",
+                json=user_payload,
+                headers=headers,
+                timeout=10.0
+            )
+            user_response.raise_for_status()
+            new_user_data = user_response.json()
+            raia_user_id = new_user_data.get("user", {}).get("id") or new_user_data.get("id")
+            
+            if not raia_user_id:
+                raise ValueError("Could not get or create Raia User ID")
 
-        # B. Create the Conversation using the internal User ID
-        # This matches the screenshot you sent (POST /external/conversations)
+        # STEP 3: Create a NEW Conversation
+        logger.info(f"Creating NEW conversation for user: {raia_user_id}")
         create_conv_payload = {
             "conversationUserId": raia_user_id,
             "title": f"Chat with {first_name}",
@@ -129,10 +163,6 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
             headers=headers,
             timeout=10.0
         )
-        
-        if create_response.status_code >= 400:
-            logger.error(f"Raia Create Error: {create_response.text}")
-            
         create_response.raise_for_status()
         new_data = create_response.json()
         
@@ -146,22 +176,19 @@ async def send_message_to_raia(conversation_id: str, message: str) -> str:
     }
     
     payload = {
-        "text": message
+        "message": str(message)
     }
 
     async with httpx.AsyncClient() as client:
         try:
-            # POST /conversations/{id}/messages
             response = await client.post(
                 f"{RAIA_BASE_URL}/conversations/{conversation_id}/messages",
                 json=payload,
                 headers=headers,
-                timeout=45.0 # Increased timeout as AI generation can be slow
+                timeout=45.0 
             )
             response.raise_for_status()
             data = response.json()
-            
-            # Extract text from response (handling potential variations)
             return data.get("text") or data.get("message") or "..."
 
         except httpx.HTTPStatusError as e:
@@ -184,38 +211,61 @@ async def receive_chat_event(request: Request):
     if 'chat' in event and 'messagePayload' in event['chat']:
         payload = event['chat']['messagePayload']
         space_name = payload['space']['name']
+        space_type = payload['space'].get('type', 'DIRECT_MESSAGE') 
         user_name = payload['message']['sender']['name']
         user_display = payload['message']['sender']['displayName']
         raw_text = payload['message']['text']
         
-        # 1. Normalize
-        clean_text = normalize_text(raw_text)
+        thread_name = None
+        if 'thread' in payload['message']:
+            thread_name = payload['message']['thread'].get('name')
         
-        # If text is empty (e.g. just an image), ignore or handle gracefully
+        clean_text = normalize_text(raw_text)
         if not clean_text:
             return {}
 
-        # 2. Generate Key
-        external_key = generate_deterministic_key(space_name, user_name)
+        external_key = generate_deterministic_key(space_name, user_name, space_type, thread_name)
 
-        # 3. Async Processing (Fire-and-forget logic)
+        # 3. Async Processing
         async def process_and_reply():
             try:
+                # --- COMPILE THE AI PROMPT WITH HISTORY ---
+                ai_prompt = clean_text
+                
+                if space_type != "DIRECT_MESSAGE":
+                    # Fetch the last 50 messages from this space/thread
+                    history = fetch_space_history(space_name, thread_name, limit=50)
+                    
+                    if history:
+                        # Append the current message manually at the bottom so the AI knows exactly what to answer
+                        ai_prompt = (
+                            "Here is the recent conversation history for context:\n"
+                            f"{history}\n\n"
+                            f"[{user_display} just asked you]: {clean_text}\n\n"
+                            "Please reply to this latest message considering the context above."
+                        )
+                    else:
+                        ai_prompt = f"[{user_display} says]: {clean_text}"
+
                 # A. Get Context
                 raia_id = await get_active_raia_conversation(external_key, user_display)
                 
                 # B. Get AI Reply
-                agent_reply = await send_message_to_raia(raia_id, clean_text)
+                agent_reply = await send_message_to_raia(raia_id, ai_prompt)
                 
                 # C. Reply to Google Chat
+                reply_body = {'text': agent_reply}
+                if thread_name:
+                    reply_body['thread'] = {'name': thread_name}
+                
                 chat_service.spaces().messages().create(
                     parent=space_name,
-                    body={'text': agent_reply}
+                    body=reply_body,
+                    messageReplyOption="REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD" if thread_name else None
                 ).execute()
                 
             except Exception as e:
                 logger.error(f"Pipeline Error: {e}")
-                # Optional: Send generic error card to user if desired
 
         # Execute async
         await process_and_reply()
