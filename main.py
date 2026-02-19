@@ -33,10 +33,19 @@ def normalize_text(text: str) -> str:
     text = re.sub(r'<users/[^>]+>', '', text)
     return text.strip()
 
-def generate_deterministic_key(space_name: str, user_name: str) -> str:
-    """Generates a consistent key based on the User and Space."""
-    # This ensures the same user in the same DM always gets the same Raia history
-    raw_key = f"{space_name}:{user_name}"
+def generate_deterministic_key(space_name: str, user_name: str, space_type: str, thread_name: str = None) -> str:
+    """
+    Generates a consistent key based on the context.
+    - DMs (DIRECT_MESSAGE): Tied to the specific user.
+    - Spaces (ROOM): Tied to the specific thread, so multiple users share context.
+    """
+    if space_type == "DIRECT_MESSAGE":
+        raw_key = f"{space_name}:{user_name}"
+    else:
+        # In a group space, use the thread name. If no thread (rare but possible), default to space.
+        # This groups all users in a thread into a single Raia conversation.
+        raw_key = thread_name if thread_name else space_name
+        
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 async def get_active_raia_conversation(external_key: str, user_display_name: str) -> str:
@@ -177,38 +186,53 @@ async def receive_chat_event(request: Request):
     if 'chat' in event and 'messagePayload' in event['chat']:
         payload = event['chat']['messagePayload']
         space_name = payload['space']['name']
+        space_type = payload['space'].get('type', 'DIRECT_MESSAGE') # DIRECT_MESSAGE or ROOM
         user_name = payload['message']['sender']['name']
         user_display = payload['message']['sender']['displayName']
         raw_text = payload['message']['text']
         
-        # 1. Normalize
-        clean_text = normalize_text(raw_text)
+        # Safely extract thread name if it exists (for group spaces)
+        thread_name = None
+        if 'thread' in payload['message']:
+            thread_name = payload['message']['thread'].get('name')
         
-        # If text is empty (e.g. just an image), ignore or handle gracefully
+        # 1. Normalize Text
+        clean_text = normalize_text(raw_text)
         if not clean_text:
             return {}
 
-        # 2. Generate Key
-        external_key = generate_deterministic_key(space_name, user_name)
+        # 2. Generate Context-Aware Key
+        external_key = generate_deterministic_key(space_name, user_name, space_type, thread_name)
 
-        # 3. Async Processing (Fire-and-forget logic)
+        # 3. Async Processing
         async def process_and_reply():
             try:
+                # If it's a group chat, we might want the AI to know WHO is speaking in the shared context
+                ai_prompt = clean_text
+                if space_type != "DIRECT_MESSAGE":
+                    ai_prompt = f"[{user_display} says]: {clean_text}"
+
                 # A. Get Context
                 raia_id = await get_active_raia_conversation(external_key, user_display)
                 
                 # B. Get AI Reply
-                agent_reply = await send_message_to_raia(raia_id, clean_text)
+                agent_reply = await send_message_to_raia(raia_id, ai_prompt)
                 
                 # C. Reply to Google Chat
+                # If a thread exists, we must reply to that specific thread
+                reply_body = {'text': agent_reply}
+                if thread_name:
+                    reply_body['thread'] = {'name': thread_name}
+                
                 chat_service.spaces().messages().create(
                     parent=space_name,
-                    body={'text': agent_reply}
+                    body=reply_body,
+                    # messageReplyOption must be set to REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD for threads
+                    messageReplyOption="REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD" if thread_name else None
                 ).execute()
                 
             except Exception as e:
                 logger.error(f"Pipeline Error: {e}")
-                # Optional: Send generic error card to user if desired
 
         # Execute async
         await process_and_reply()
