@@ -41,8 +41,9 @@ def generate_deterministic_key(space_name: str, user_name: str) -> str:
 
 async def get_active_raia_conversation(external_key: str, user_display_name: str) -> str:
     """
-    1. Tries to find an existing open conversation for this user key.
-    2. If none, Ensure User Exists -> Create New Generic Conversation.
+    1. Searches for the user to retrieve their existing conversation history.
+    2. If a conversation exists, returns the latest one to continue the chat.
+    3. If not, creates the user (if needed) and a new conversation.
     """
     headers = {
         "Content-Type": "application/json",
@@ -50,73 +51,69 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
     }
 
     async with httpx.AsyncClient() as client:
-        # STEP 1: Search for existing active conversation (Unchanged)
+        raia_user_id = None
+
+        # STEP 1: Search for the User and their Conversation History
         try:
-            search_response = await client.get(
-                f"{RAIA_BASE_URL}/conversations",
-                params={"fkUserId": external_key, "status": "open"}, 
+            search_user = await client.get(
+                f"{RAIA_BASE_URL}/users/search",
+                params={"fkId": external_key},
                 headers=headers,
                 timeout=5.0
             )
             
-            if search_response.status_code == 200:
-                data = search_response.json()
-                conversations = data if isinstance(data, list) else data.get('items', [])
-                if conversations:
-                    return conversations[0].get('id') or conversations[0].get('conversationId')
+            if search_user.status_code == 200:
+                user_data = search_user.json()
+                
+                # Check if we got valid data back (not an empty list)
+                if user_data:
+                    # Handle list vs object return safely
+                    record = user_data[0] if isinstance(user_data, list) else user_data
+                    
+                    # Extract the internal Raia User ID
+                    raia_user_id = record.get("user", {}).get("id") or record.get("id")
+                    
+                    # Extract existing conversations!
+                    conv_ids = record.get("conversationIds", [])
+                    if conv_ids and isinstance(conv_ids, list):
+                        # Pick the most recent conversation to continue
+                        latest_conv_id = conv_ids[-1]
+                        logger.info(f"Continuing existing conversation: {latest_conv_id}")
+                        return latest_conv_id
+
         except Exception as e:
-            logger.warning(f"Lookup failed: {e}")
+            logger.warning(f"User search/history check failed: {e}")
 
-        # STEP 2: The New Strategy (Create User -> Create Conversation)
-        logger.info(f"Creating NEW generic conversation for key: {external_key[:8]}")
-
-        # A. Create or Get the User first
-        # We try to create the user. If they exist, Raia usually returns the existing ID or we can search.
+        # STEP 2: Create User (Only if they weren't found in Step 1)
         name_parts = user_display_name.split(' ', 1)
         first_name = name_parts[0]
         last_name = name_parts[1] if len(name_parts) > 1 else "User"
-        
-        user_payload = {
-            "fkId": external_key,
-            "firstName": first_name,
-            "lastName": last_name
-        }
-        
-        # We attempt to create the user to get their internal ID
-        user_response = await client.post(
-            f"{RAIA_BASE_URL}/users",
-            json=user_payload,
-            headers=headers,
-            timeout=10.0
-        )
-        
-        if user_response.status_code == 200 or user_response.status_code == 201:
-            user_data = user_response.json()
-            raia_user_id = user_data.get("id")
-        else:
-            # If creation fails (maybe user exists?), try to search for them
-            logger.info("User creation failed/existed, searching instead...")
-            search_user = await client.get(
-                f"{RAIA_BASE_URL}/users/search",
-                params={"fkId": external_key},
-                headers=headers
-            )
-            search_user.raise_for_status()
-            user_data = search_user.json()
-            # Handle list vs object return
-            if isinstance(user_data, list) and user_data:
-                # If it's a list, check the first item
-                first_item = user_data[0]
-                raia_user_id = first_item.get("user", {}).get("id") or first_item.get("id")
-            else:
-                # If it's a dictionary (like your example JSON)
-                raia_user_id = user_data.get("user", {}).get("id") or user_data.get("id")
 
         if not raia_user_id:
-            raise ValueError("Could not get Raia User ID")
+            logger.info(f"Creating new user for key: {external_key[:8]}")
+            user_payload = {
+                "fkId": external_key,
+                "firstName": first_name,
+                "lastName": last_name
+            }
+            
+            user_response = await client.post(
+                f"{RAIA_BASE_URL}/users",
+                json=user_payload,
+                headers=headers,
+                timeout=10.0
+            )
+            user_response.raise_for_status()
+            
+            # Extract the newly created ID
+            new_user_data = user_response.json()
+            raia_user_id = new_user_data.get("user", {}).get("id") or new_user_data.get("id")
+            
+            if not raia_user_id:
+                raise ValueError("Could not get or create Raia User ID")
 
-        # B. Create the Conversation using the internal User ID
-        # This matches the screenshot you sent (POST /external/conversations)
+        # STEP 3: Create a NEW Conversation (Since no history was found)
+        logger.info(f"Creating NEW conversation for user: {raia_user_id}")
         create_conv_payload = {
             "conversationUserId": raia_user_id,
             "title": f"Chat with {first_name}",
@@ -129,10 +126,6 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
             headers=headers,
             timeout=10.0
         )
-        
-        if create_response.status_code >= 400:
-            logger.error(f"Raia Create Error: {create_response.text}")
-            
         create_response.raise_for_status()
         new_data = create_response.json()
         
