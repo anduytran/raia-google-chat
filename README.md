@@ -1,5 +1,3 @@
-Here is the updated README, tailored to exactly match the logic, architecture, and configuration of your provided Python FastAPI code.
-
 # Raia Google Chat (Spaces) Integration
 
 ## Project Overview
