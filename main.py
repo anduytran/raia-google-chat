@@ -105,9 +105,12 @@ async def get_active_raia_conversation(external_key: str, user_display_name: str
             user_data = search_user.json()
             # Handle list vs object return
             if isinstance(user_data, list) and user_data:
-                raia_user_id = user_data[0].get("id")
+                # If it's a list, check the first item
+                first_item = user_data[0]
+                raia_user_id = first_item.get("user", {}).get("id") or first_item.get("id")
             else:
-                raia_user_id = user_data.get("id")
+                # If it's a dictionary (like your example JSON)
+                raia_user_id = user_data.get("user", {}).get("id") or user_data.get("id")
 
         if not raia_user_id:
             raise ValueError("Could not get Raia User ID")
