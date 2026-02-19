@@ -4,7 +4,7 @@ name: Deploy Adam Bot
 # 2. Triggers
 on:
   push:
-    branches: [ "raia-api-integration" ]
+    branches: [ "docker-test" ]
   pull_request:
     branches: [ "master" ]
 
