@@ -146,7 +146,7 @@ async def send_message_to_raia(conversation_id: str, message: str) -> str:
     }
     
     payload = {
-        "text": message
+        "message": str(message)
     }
 
     async with httpx.AsyncClient() as client:
